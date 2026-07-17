@@ -1,5 +1,6 @@
+name: network-gateway
 services:
-  # Interactive development — build and test inside the container
+  # Interactive development - build and test inside the container
   gateway-dev:
     build:
       context: .
