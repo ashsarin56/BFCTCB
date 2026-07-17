@@ -92,3 +92,25 @@ void close_fd(fd_t fd) {
         }
     }
 }
+
+fd_t connect_to_backend(const std::string& host, uint16_t port) {
+    fd_t sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == INVALID_FD) {
+        std::cerr << "socket() failed: " << std::strerror(errno) << "\n";
+        return INVALID_FD;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        std::cerr << "inet_pton() failed for host '" << host << "': " << std::strerror(errno) << "\n";
+        close(sock);
+        return INVALID_FD;
+    }
+    if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        std::cerr << "connect() to " << host << ":" << port << " failed: " << std::strerror(errno) << "\n";
+        close(sock);
+        return INVALID_FD;
+    }
+    return sock;
+}
