@@ -58,7 +58,6 @@ YAML_TEST_SRC="/tmp/yaml_link_test.cpp"
 YAML_TEST_BIN="/tmp/yaml_link_test"
 
 cat > "$YAML_TEST_SRC" << 'EOF'
-// Minimal smoke test: verify yaml-cpp headers are reachable and the library links.
 #include <yaml-cpp/yaml.h>
 #include <cstdio>
 
@@ -157,5 +156,141 @@ config_types_output=$("$CONFIG_TYPES_TEST_BIN" 2>&1) || true
 assert_contains "$config_types_output" "BACKEND_TARGET:OK" "BackendTarget struct initialises correctly"
 assert_contains "$config_types_output" "SERVICE_CONFIG:OK" "ServiceConfig struct initialises correctly"
 assert_contains "$config_types_output" "GATEWAY_CONFIG:OK" "GatewayConfig vector stores ServiceConfig entries"
+
+echo ""
+echo "Commit 5.3: config parser — parse gateway.yaml"
+
+CONFIG_PARSER_TEST_SRC="/tmp/config_parser_test.cpp"
+CONFIG_PARSER_TEST_BIN="/tmp/config_parser_test"
+
+YAML_CPP_INCLUDE="$PROJECT_ROOT/build/_deps/yaml-cpp-src/include"
+YAML_CPP_LIB=$(ls "$PROJECT_ROOT/build/_deps/yaml-cpp-build/libyaml-cpp"*.a 2>/dev/null | head -1)
+
+cat > "$CONFIG_PARSER_TEST_SRC" << 'EOF'
+#include "config/config_parser.h"
+#include "config/config_types.h"
+#include <cstdio>
+#include <stdexcept>
+#include <fstream>
+
+static void write_yaml(const char* path, const char* content) {
+    std::ofstream f(path);
+    f << content;
+}
+
+int main() {
+    write_yaml("/tmp/cp_test_good.yaml",
+        "gateway:\n"
+        "  services:\n"
+        "    - name: \"svc-alpha\"\n"
+        "      listen_port: 8080\n"
+        "      backend:\n"
+        "        host: \"127.0.0.1\"\n"
+        "        port: 3001\n"
+        "    - name: \"svc-beta\"\n"
+        "      listen_port: 8443\n"
+        "      backend:\n"
+        "        host: \"10.0.0.1\"\n"
+        "        port: 4001\n"
+    );
+
+    GatewayConfig cfg = ConfigParser::parse("/tmp/cp_test_good.yaml");
+
+    if (cfg.services.size() == 2) {
+        std::puts("PARSE_COUNT:OK");
+    } else {
+        std::puts("PARSE_COUNT:FAIL");
+    }
+
+    if (cfg.services[0].name == "svc-alpha" && cfg.services[0].listen_port == 8080) {
+        std::puts("PARSE_SVC_ALPHA:OK");
+    } else {
+        std::puts("PARSE_SVC_ALPHA:FAIL");
+    }
+
+    if (cfg.services[0].backend.host == "127.0.0.1" && cfg.services[0].backend.port == 3001) {
+        std::puts("PARSE_BACKEND_ALPHA:OK");
+    } else {
+        std::puts("PARSE_BACKEND_ALPHA:FAIL");
+    }
+
+    if (cfg.services[1].name == "svc-beta" && cfg.services[1].listen_port == 8443) {
+        std::puts("PARSE_SVC_BETA:OK");
+    } else {
+        std::puts("PARSE_SVC_BETA:FAIL");
+    }
+
+    if (cfg.services[1].backend.host == "10.0.0.1" && cfg.services[1].backend.port == 4001) {
+        std::puts("PARSE_BACKEND_BETA:OK");
+    } else {
+        std::puts("PARSE_BACKEND_BETA:FAIL");
+    }
+
+    try {
+        ConfigParser::parse("/tmp/nonexistent_gateway_xyz.yaml");
+        std::puts("FILE_NOT_FOUND:FAIL");
+    } catch (const std::runtime_error& e) {
+        std::string msg = e.what();
+        if (msg.find("not found") != std::string::npos) {
+            std::puts("FILE_NOT_FOUND:OK");
+        } else {
+            std::puts("FILE_NOT_FOUND:FAIL");
+        }
+    }
+
+    write_yaml("/tmp/cp_test_bad.yaml", "gateway: [[[invalid\n");
+    try {
+        ConfigParser::parse("/tmp/cp_test_bad.yaml");
+        std::puts("MALFORMED_YAML:FAIL");
+    } catch (const std::runtime_error& e) {
+        std::string msg = e.what();
+        if (msg.find("malformed") != std::string::npos) {
+            std::puts("MALFORMED_YAML:OK");
+        } else {
+            std::puts("MALFORMED_YAML:FAIL");
+        }
+    }
+
+    write_yaml("/tmp/cp_test_empty.yaml", "gateway:\n  services:\n");
+    GatewayConfig empty_cfg = ConfigParser::parse("/tmp/cp_test_empty.yaml");
+    if (empty_cfg.services.empty()) {
+        std::puts("EMPTY_SERVICES:OK");
+    } else {
+        std::puts("EMPTY_SERVICES:FAIL");
+    }
+
+    return 0;
+}
+EOF
+
+if [ -d "$YAML_CPP_INCLUDE" ] && [ -n "$YAML_CPP_LIB" ] && [ -f "$YAML_CPP_LIB" ]; then
+    g++ -std=c++17 -Wall -Wextra \
+        -I"$PROJECT_ROOT/src" \
+        -I"$YAML_CPP_INCLUDE" \
+        "$PROJECT_ROOT/src/config/config_parser.cpp" \
+        "$CONFIG_PARSER_TEST_SRC" \
+        "$YAML_CPP_LIB" \
+        -o "$CONFIG_PARSER_TEST_BIN" 2>/tmp/config_parser_compile_errors.txt
+    assert_exit_code $? 0 "config_parser.cpp compiles cleanly"
+
+    if [ -s /tmp/config_parser_compile_errors.txt ]; then
+        echo "  Compiler output:"
+        cat /tmp/config_parser_compile_errors.txt
+    fi
+
+    parser_output=$("$CONFIG_PARSER_TEST_BIN" 2>&1) || true
+
+    assert_contains "$parser_output" "PARSE_COUNT:OK"          "parse() loads the correct number of services"
+    assert_contains "$parser_output" "PARSE_SVC_ALPHA:OK"      "parse() reads service name and listen_port for svc-alpha"
+    assert_contains "$parser_output" "PARSE_BACKEND_ALPHA:OK"  "parse() reads backend host and port for svc-alpha"
+    assert_contains "$parser_output" "PARSE_SVC_BETA:OK"       "parse() reads service name and listen_port for svc-beta"
+    assert_contains "$parser_output" "PARSE_BACKEND_BETA:OK"   "parse() reads backend host and port for svc-beta"
+    assert_contains "$parser_output" "FILE_NOT_FOUND:OK"       "parse() throws with 'not found' for missing file"
+    assert_contains "$parser_output" "MALFORMED_YAML:OK"       "parse() throws with 'malformed' for invalid YAML"
+    assert_contains "$parser_output" "EMPTY_SERVICES:OK"       "parse() returns empty GatewayConfig when services list is empty"
+else
+    assert_exit_code 1 0 "yaml-cpp headers and static library found (required for config_parser tests)"
+    echo "    Note: run cmake first so FetchContent downloads yaml-cpp"
+fi
 
 print_summary "Phase 0"
