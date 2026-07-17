@@ -20,6 +20,7 @@ FetchContent_MakeAvailable(yaml-cpp)
 add_executable(gateway
     src/main.cpp
     src/core/socket_utils.cpp
+    src/core/proxy_session.cpp
     src/config/config_parser.cpp
     src/routing/router.cpp
 )
