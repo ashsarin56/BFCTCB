@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ── Gateway executable ──
 add_executable(gateway
     src/main.cpp
+    src/core/socket_utils.cpp
 )
 
 target_include_directories(gateway PRIVATE include src)
