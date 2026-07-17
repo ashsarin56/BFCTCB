@@ -1,4 +1,5 @@
-// socket_utils.h - TCP socket helper declarations
+// socket_utils.h - TCP socket helper declarations (create_listener, accept_client,
+//   set_nonblocking, close_fd, connect_to_backend)
 #pragma once
 
 #include <cstdint>
@@ -17,3 +18,5 @@ bool set_nonblocking(fd_t fd);
 
 // closes fd, retrying automatically on EINTR.
 void close_fd(fd_t fd);
+
+fd_t connect_to_backend(const std::string& host, uint16_t port);
