@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_phase1.sh - phase 1: gateway accepts a single client connection
+# test1.sh - phase 1: gateway accepts a single client connection
 
 source "$(dirname "$0")/helpers.sh"
 
@@ -23,6 +23,6 @@ assert_contains "$gateway_log" "127.0.0.1" "gateway logs client IP address"
 
 cleanup
 
-bash "$(dirname "$0")/test_phase0.sh"
+bash "$PROJECT_ROOT/tests/test_phase0.sh"
 
 print_summary "Phase 1"
