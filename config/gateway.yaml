@@ -1,1 +1,12 @@
-
+gateway:
+  services:
+    - name: "web-service"
+      listen_port: 8080
+      backend:
+        host: "127.0.0.1"
+        port: 3001
+    - name: "api-service"
+      listen_port: 8443
+      backend:
+        host: "127.0.0.1"
+        port: 4001

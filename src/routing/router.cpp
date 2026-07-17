@@ -1,6 +1,18 @@
 // router.cpp — Implementation of the Router route table.
 #include "router.h"
 
+Router Router::from_config(const GatewayConfig& config) {
+    Router router;
+    for (const ServiceConfig& svc : config.services) {
+        ServiceTarget target;
+        target.name = svc.name;
+        target.host = svc.backend.host;
+        target.port = svc.backend.port;
+        router.add_route(svc.listen_port, std::move(target));
+    }
+    return router;
+}
+
 void Router::add_route(uint16_t listen_port, ServiceTarget target) {
     // Inserting with [] overwrites any previously registered route for this port (last write wins).
     routes_[listen_port] = std::move(target);

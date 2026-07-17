@@ -21,6 +21,7 @@ add_executable(gateway
     src/main.cpp
     src/core/socket_utils.cpp
     src/config/config_parser.cpp
+    src/routing/router.cpp
 )
 
 target_include_directories(gateway PRIVATE include src)
