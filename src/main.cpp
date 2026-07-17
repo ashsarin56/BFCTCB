@@ -38,7 +38,7 @@ int main() {
     std::fprintf(stdout, "connected to backend %s:%u\n", BACKEND_HOST, BACKEND_PORT);
     std::fflush(stdout);
     ProxySession session{client_fd, backend_fd};
-    forward_one_way(session.client_fd, session.backend_fd);
+    run_bidirectional(session);
     close_fd(backend_fd);
     close_fd(client_fd);
     close_fd(listener_fd);
