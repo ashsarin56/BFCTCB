@@ -20,6 +20,7 @@ FetchContent_MakeAvailable(yaml-cpp)
 add_executable(gateway
     src/main.cpp
     src/core/socket_utils.cpp
+    src/config/config_parser.cpp
 )
 
 target_include_directories(gateway PRIVATE include src)
