@@ -20,8 +20,8 @@ else
     assert_exit_code 1 0 "Gateway binary exists"
 fi
 
-# run and check output
-output=$("$GATEWAY_BIN" 2>&1 || true)
+# run and check output — gateway now blocks on accept(), use timeout to let it print then kill it
+output=$(timeout 2 "$GATEWAY_BIN" 2>&1 || true)
 assert_contains "$output" "Gateway" "Gateway prints startup message"
 
 echo ""
