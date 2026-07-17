@@ -98,12 +98,66 @@ else
 fi
 
 # Verify yaml-cpp static library exists in the build tree.
-# At Commit 5.1 main.cpp does not include yaml-cpp, so no yaml symbols appear in the
-# gateway binary — checking the archive directly is the correct proof of linkage.
 if [ -n "$YAML_CPP_LIB" ] && [ -f "$YAML_CPP_LIB" ]; then
     assert_exit_code 0 0 "yaml-cpp static library built at build/_deps/yaml-cpp-build"
 else
     assert_exit_code 1 0 "yaml-cpp static library built at build/_deps/yaml-cpp-build"
 fi
+
+echo ""
+echo "Commit 5.2: GatewayConfig types"
+
+CONFIG_TYPES_TEST_SRC="/tmp/config_types_test.cpp"
+CONFIG_TYPES_TEST_BIN="/tmp/config_types_test"
+
+cat > "$CONFIG_TYPES_TEST_SRC" << 'EOF'
+// Smoke test: verify all three structs in config_types.h are well-formed and
+// can be value-initialised without linker symbols (header-only types).
+#include "config/config_types.h"
+#include <cstdio>
+
+int main() {
+    BackendTarget bt{"127.0.0.1", 3001};
+    if (bt.host == "127.0.0.1" && bt.port == 3001) {
+        std::puts("BACKEND_TARGET:OK");
+    } else {
+        std::puts("BACKEND_TARGET:FAIL");
+    }
+
+    ServiceConfig sc{"web", 8080, bt};
+    if (sc.name == "web" && sc.listen_port == 8080 && sc.backend.port == 3001) {
+        std::puts("SERVICE_CONFIG:OK");
+    } else {
+        std::puts("SERVICE_CONFIG:FAIL");
+    }
+
+    GatewayConfig gc;
+    gc.services.push_back(sc);
+    if (gc.services.size() == 1 && gc.services[0].name == "web") {
+        std::puts("GATEWAY_CONFIG:OK");
+    } else {
+        std::puts("GATEWAY_CONFIG:FAIL");
+    }
+
+    return 0;
+}
+EOF
+
+g++ -std=c++17 -Wall -Wextra \
+    -I"$PROJECT_ROOT/src" \
+    "$CONFIG_TYPES_TEST_SRC" \
+    -o "$CONFIG_TYPES_TEST_BIN" 2>/tmp/config_types_compile_errors.txt
+assert_exit_code $? 0 "config_types.h compiles cleanly"
+
+if [ -s /tmp/config_types_compile_errors.txt ]; then
+    echo "  Compiler output:"
+    cat /tmp/config_types_compile_errors.txt
+fi
+
+config_types_output=$("$CONFIG_TYPES_TEST_BIN" 2>&1) || true
+
+assert_contains "$config_types_output" "BACKEND_TARGET:OK" "BackendTarget struct initialises correctly"
+assert_contains "$config_types_output" "SERVICE_CONFIG:OK" "ServiceConfig struct initialises correctly"
+assert_contains "$config_types_output" "GATEWAY_CONFIG:OK" "GatewayConfig vector stores ServiceConfig entries"
 
 print_summary "Phase 0"
