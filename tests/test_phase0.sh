@@ -20,9 +20,9 @@ else
     assert_exit_code 1 0 "Gateway binary exists"
 fi
 
-# run and check output
-output=$("$GATEWAY_BIN" 2>&1 || true)
-assert_contains "$output" "Gateway" "Gateway prints startup message"
+# run and check output — gateway now blocks on accept(), use timeout to let it print then kill it
+output=$(timeout 2 "$GATEWAY_BIN" 2>&1 || true)
+assert_contains "$output" "listening" "Gateway prints startup message"
 
 echo ""
 echo "Commit 4.1: Router class unit tests"
@@ -111,8 +111,6 @@ CONFIG_TYPES_TEST_SRC="/tmp/config_types_test.cpp"
 CONFIG_TYPES_TEST_BIN="/tmp/config_types_test"
 
 cat > "$CONFIG_TYPES_TEST_SRC" << 'EOF'
-// Smoke test: verify all three structs in config_types.h are well-formed and
-// can be value-initialised without linker symbols (header-only types).
 #include "config/config_types.h"
 #include <cstdio>
 
