@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include "config/config_types.h"
 
 // Describes a backend service the gateway can forward traffic to.
 struct ServiceTarget {
@@ -14,6 +15,9 @@ struct ServiceTarget {
 
 class Router {
 public:
+    // Build a Router from a parsed GatewayConfig — one route per service entry.
+    static Router from_config(const GatewayConfig& config);
+
     // Add a route 
     void add_route(uint16_t listen_port, ServiceTarget target);
 
