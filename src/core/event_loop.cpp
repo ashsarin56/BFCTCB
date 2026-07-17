@@ -69,7 +69,22 @@ void EventLoop::run() {
             break;
         }
         for (int i = 0; i < n; ++i) {
-            if (events[i].data.fd == listener_fd_)handle_accept();
+            fd_t fd = events[i].data.fd;
+            uint32_t ev = events[i].events;
+            if (fd == listener_fd_) {
+                handle_accept();
+                continue;
+            }
+            if (ev & (EPOLLERR | EPOLLHUP)) {
+                handle_disconnect(fd);
+                continue;
+            }
+            if (ev & EPOLLIN) {
+                handle_read(fd);
+            }
+            if (ev & EPOLLOUT) {
+                handle_write(fd);
+            }
         }
     }
 }
@@ -127,6 +142,74 @@ void EventLoop::handle_accept() {
         std::fflush(stdout);
     }
 }
+
+void EventLoop::handle_read(fd_t fd) {
+    auto it = connections_.find(fd);
+    if (it == connections_.end()) return;
+    auto conn = it->second;
+    uint8_t buf[BUFFER_SIZE];
+    ssize_t bytes = read(fd, buf, sizeof(buf));
+    if (bytes < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+        handle_disconnect(fd);
+        return;
+    }
+    if (bytes == 0) {
+        handle_disconnect(fd);
+        return;
+    }
+    fd_t dest_fd;
+    std::vector<uint8_t>* dest_buf;
+    if (fd == conn->client_fd) {
+        dest_fd = conn->backend_fd;
+        dest_buf = &conn->c2b_buf;
+    } else {
+        dest_fd = conn->client_fd;
+        dest_buf = &conn->b2c_buf;
+    }
+    dest_buf->insert(dest_buf->end(), buf, buf + bytes);
+    struct epoll_event ev{};
+    ev.events = EPOLLIN | EPOLLOUT;
+    ev.data.fd = dest_fd;
+    epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, dest_fd, &ev);
+}
+
+void EventLoop::handle_write(fd_t fd) {
+    auto it = connections_.find(fd);
+    if (it == connections_.end()) return;
+    auto conn = it->second;
+    std::vector<uint8_t>* src_buf;
+    if (fd == conn->client_fd) {
+        src_buf = &conn->b2c_buf;
+    } else {
+        src_buf = &conn->c2b_buf;
+    }
+    if (src_buf->empty()) {
+        struct epoll_event ev{};
+        ev.events = EPOLLIN;
+        ev.data.fd = fd;
+        epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+        return;
+    }
+    ssize_t written = write(fd, src_buf->data(), src_buf->size());
+    if (written < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+        handle_disconnect(fd);
+        return;
+    }
+    src_buf->erase(src_buf->begin(), src_buf->begin() + written);
+    if (src_buf->empty()) {
+        struct epoll_event ev{};
+        ev.events = EPOLLIN;
+        ev.data.fd = fd;
+        epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+    }
+}
+
+void EventLoop::handle_disconnect(fd_t fd) {
+    remove_connection(fd);
+}
+
 void EventLoop::remove_connection(fd_t fd) {
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;

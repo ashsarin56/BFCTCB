@@ -29,5 +29,8 @@ private:
     std::unordered_map<fd_t, std::shared_ptr<Connection>> connections_;
 
     void handle_accept();
+    void handle_read(fd_t fd);
+    void handle_write(fd_t fd);
+    void handle_disconnect(fd_t fd);
     void remove_connection(fd_t fd);
 };
