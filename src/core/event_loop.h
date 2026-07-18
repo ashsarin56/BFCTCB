@@ -2,6 +2,7 @@
 #pragma once
 #include "common/types.h"
 #include "routing/router.h"
+#include "routing/load_balancer.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -16,21 +17,27 @@ struct Connection {
     fd_t pipe_b2c[2];
     size_t c2b_pipe_bytes;
     size_t b2c_pipe_bytes;
+    BackendInstance* backend_instance;  // tracks which backend this connection uses
 };
 
 class EventLoop {
 public:
     EventLoop();
     ~EventLoop();
-    bool init(const Router& router);
+    bool init(const std::string& config_path, const Router& router, LoadBalancer& lb);
     void run();
     void shutdown();
+    void request_reload();
 
 private:
+    void reload_config();
     fd_t epoll_fd_;
     std::atomic<bool> running_;
+    std::atomic<bool> reload_pending_;
+    std::string config_path_;
     std::unordered_map<fd_t, uint16_t> listeners_;
-    const Router* router_;
+    Router router_;
+    LoadBalancer* load_balancer_;
     std::unordered_map<fd_t, std::shared_ptr<Connection>> connections_;
 
     void handle_accept(fd_t listener_fd);

@@ -3,13 +3,26 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
+#include <memory>
+#include <atomic>
 #include "config/config_types.h"
+
+struct BackendInstance {
+    std::string host;
+    uint16_t port;
+    std::atomic<int> active_connections;
+    std::atomic<bool> is_healthy;
+
+    BackendInstance(const std::string& h, uint16_t p);
+};
 
 // Describes a backend service the gateway can forward traffic to.
 struct ServiceTarget {
     std::string name;  // for logging
     std::string host;  // Backend host 
     uint16_t    port;  // Backend port
+    std::vector<std::shared_ptr<BackendInstance>> backends;
 };
 
 

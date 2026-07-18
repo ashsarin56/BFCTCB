@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -26,6 +27,13 @@ fd_t create_listener(uint16_t port) {
     return INVALID_FD;
   }
 
+  int reuseport = 1;
+  if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &reuseport, sizeof(reuseport)) < 0) {
+      std::cerr << "setsockopt(SO_REUSEPORT) failed: " << std::strerror(errno) << "\n";
+      close(sock);
+      return INVALID_FD;
+  }
+
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = INADDR_ANY;
@@ -42,6 +50,11 @@ fd_t create_listener(uint16_t port) {
     std::cerr << "listen() failed: " << std::strerror(errno) << "\n";
     close(sock);
     return INVALID_FD;
+  }
+
+  int qlen = 5;
+  if (setsockopt(sock, IPPROTO_TCP, TCP_FASTOPEN, &qlen, sizeof(qlen)) < 0) {
+      std::cerr << "setsockopt(TCP_FASTOPEN) failed: " << std::strerror(errno) << "\n";
   }
 
   return sock;

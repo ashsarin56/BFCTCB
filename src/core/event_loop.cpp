@@ -2,6 +2,7 @@
 #include "event_loop.h"
 #include "socket_utils.h"
 #include "data_forwarder.h"
+#include "config/config_parser.h"
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -13,7 +14,7 @@
 static constexpr int MAX_EVENTS = 64;
 
 EventLoop::EventLoop()
-    : epoll_fd_(INVALID_FD), running_(false), router_(nullptr) {}
+    : epoll_fd_(INVALID_FD), running_(false), reload_pending_(false) {}
 
 EventLoop::~EventLoop() {
     for (auto& pair : connections_) {
@@ -29,8 +30,10 @@ EventLoop::~EventLoop() {
     }
 }
 
-bool EventLoop::init(const Router& router) {
-    router_ = &router;
+bool EventLoop::init(const std::string& config_path, const Router& router, LoadBalancer& lb) {
+    config_path_ = config_path;
+    router_ = router;
+    load_balancer_ = &lb;
 
     epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == INVALID_FD) {
@@ -73,7 +76,12 @@ void EventLoop::run() {
     running_ = true;
     struct epoll_event events[MAX_EVENTS];
     while (running_) {
-        int n = epoll_wait(epoll_fd_, events, MAX_EVENTS, -1);
+        if (reload_pending_) {
+            reload_pending_ = false;
+            reload_config();
+        }
+        int n = epoll_wait(epoll_fd_, events, MAX_EVENTS, 100);
+        if (n == 0) continue;
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -101,6 +109,10 @@ void EventLoop::run() {
                 continue;
             }
             if (ev & (EPOLLERR | EPOLLHUP)) {
+                if ((ev & EPOLLHUP) && (ev & EPOLLIN) && !(ev & EPOLLERR)) {
+                    // Graceful EOF with pending data. Let handle_read handle it in a future iteration.
+                    continue;
+                }
                 handle_disconnect(fd);
             }
         }
@@ -111,13 +123,66 @@ void EventLoop::shutdown() {
     running_ = false;
 }
 
+void EventLoop::request_reload() {
+    reload_pending_ = true;
+}
+
+void EventLoop::reload_config() {
+    std::fprintf(stdout, "gateway reloading configuration...\n");
+    std::fflush(stdout);
+    try {
+        GatewayConfig config = ConfigParser::parse(config_path_);
+        Router new_router = Router::from_config(config);
+        
+        std::unordered_map<uint16_t, fd_t> current_ports;
+        for (const auto& pair : listeners_) {
+            current_ports[pair.second] = pair.first;
+        }
+
+        // Add new listeners
+        for (const auto& entry : new_router.get_routes()) {
+            uint16_t port = entry.first;
+            if (current_ports.count(port) == 0) {
+                fd_t listener_fd = create_listener(port);
+                if (listener_fd != INVALID_FD) {
+                    set_nonblocking(listener_fd);
+                    struct epoll_event ev{};
+                    ev.events = EPOLLIN;
+                    ev.data.fd = listener_fd;
+                    epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listener_fd, &ev);
+                    listeners_[listener_fd] = port;
+                    const ServiceTarget& target = entry.second;
+                    std::fprintf(stdout, "gateway dynamically listening on port %u -> %s:%u (%s)\n",
+                                 port, target.host.c_str(), target.port, target.name.c_str());
+                }
+            }
+        }
+
+        // Remove old listeners
+        for (const auto& pair : current_ports) {
+            uint16_t port = pair.first;
+            if (new_router.resolve(port) == nullptr) {
+                fd_t fd = pair.second;
+                epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+                close_fd(fd);
+                listeners_.erase(fd);
+                std::fprintf(stdout, "gateway stopped listening on port %u\n", port);
+            }
+        }
+        std::fflush(stdout);
+        router_ = new_router;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "gateway config reload failed: %s\n", e.what());
+    }
+}
+
 void EventLoop::handle_accept(fd_t listener_fd) {
     auto lit = listeners_.find(listener_fd);
     if (lit == listeners_.end()) {
         return;
     }
     uint16_t listen_port = lit->second;
-    const ServiceTarget* target = router_->resolve(listen_port);
+    const ServiceTarget* target = router_.resolve(listen_port);
     if (target == nullptr) {
         std::fprintf(stderr, "event_loop: no route for port %u\n", listen_port);
         return;
@@ -136,9 +201,18 @@ void EventLoop::handle_accept(fd_t listener_fd) {
                      client_ip.c_str(), target->host.c_str(), target->port);
         std::fflush(stdout);
 
-        fd_t backend_fd = connect_to_backend(target->host, target->port);
+        BackendInstance* chosen = load_balancer_->select(target->backends);
+        if (chosen == nullptr) {
+            std::fprintf(stderr, "event_loop: no healthy backend for port %u\n", listen_port);
+            close_fd(client_fd);
+            continue;
+        }
+        chosen->active_connections.fetch_add(1);
+
+        fd_t backend_fd = connect_to_backend(chosen->host, chosen->port);
         if (backend_fd == INVALID_FD) {
-            std::fprintf(stderr, "event_loop: backend connection failed, dropping client\n");
+            chosen->is_healthy.store(false, std::memory_order_release);
+            chosen->active_connections.fetch_sub(1);
             close_fd(client_fd);
             continue;
         }
@@ -151,6 +225,7 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         auto conn = std::make_shared<Connection>();
         conn->client_fd  = client_fd;
         conn->backend_fd = backend_fd;
+        conn->backend_instance = chosen;
 
         if (!DataForwarder::init_pipes(conn.get())) {
             close_fd(client_fd);
@@ -306,6 +381,13 @@ void EventLoop::handle_write(fd_t fd) {
 }
 
 void EventLoop::handle_disconnect(fd_t fd) {
+    auto it = connections_.find(fd);
+    if (it != connections_.end()) {
+        auto conn = it->second;
+        if (conn->backend_fd == fd && conn->backend_instance) {
+            conn->backend_instance->is_healthy.store(false, std::memory_order_release);
+        }
+    }
     remove_connection(fd);
 }
 
@@ -315,6 +397,10 @@ void EventLoop::remove_connection(fd_t fd) {
         return;
     }
     auto conn = it->second;
+    
+    if (conn->backend_instance) {
+        conn->backend_instance->active_connections.fetch_sub(1);
+    }
     
     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, conn->client_fd, nullptr);
     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, conn->backend_fd, nullptr);

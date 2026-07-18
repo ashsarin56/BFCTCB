@@ -3,15 +3,19 @@
 
 Router Router::from_config(const GatewayConfig& config) {
     Router router;
-    for (const ServiceConfig& svc : config.services) {
+    for (const auto& svc : config.services) {
         ServiceTarget target;
         target.name = svc.name;
         target.host = svc.backend.host;
         target.port = svc.backend.port;
+        target.backends.push_back(std::make_shared<BackendInstance>(svc.backend.host, svc.backend.port));
         router.add_route(svc.listen_port, std::move(target));
     }
     return router;
 }
+
+BackendInstance::BackendInstance(const std::string& h, uint16_t p)
+    : host(h), port(p), active_connections(0), is_healthy(true) {}
 
 void Router::add_route(uint16_t listen_port, ServiceTarget target) {
     // Inserting with [] overwrites any previously registered route for this port (last write wins).
