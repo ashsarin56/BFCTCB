@@ -65,8 +65,13 @@ bool EventLoop::init(const std::string& config_path, const Router& router, LoadB
             return false;
         }
         listeners_[listener_fd] = port;
-        std::fprintf(stdout, "gateway listening on port %u -> %s:%u (%s)\n",
-                     port, target.host.c_str(), target.port, target.name.c_str());
+        if (!target.backends.empty()) {
+            std::fprintf(stdout, "gateway listening on port %u -> %s:%u (%s)\n",
+                         port, target.backends[0]->host.c_str(), target.backends[0]->port, target.name.c_str());
+        } else {
+            std::fprintf(stdout, "gateway listening on port %u (%s, no backends)\n",
+                         port, target.name.c_str());
+        }
         std::fflush(stdout);
     }
     return true;
@@ -152,8 +157,13 @@ void EventLoop::reload_config() {
                     epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listener_fd, &ev);
                     listeners_[listener_fd] = port;
                     const ServiceTarget& target = entry.second;
-                    std::fprintf(stdout, "gateway dynamically listening on port %u -> %s:%u (%s)\n",
-                                 port, target.host.c_str(), target.port, target.name.c_str());
+                    if (!target.backends.empty()) {
+                        std::fprintf(stdout, "gateway dynamically listening on port %u -> %s:%u (%s)\n",
+                                     port, target.backends[0]->host.c_str(), target.backends[0]->port, target.name.c_str());
+                    } else {
+                        std::fprintf(stdout, "gateway dynamically listening on port %u (%s, no backends)\n",
+                                     port, target.name.c_str());
+                    }
                 }
             }
         }
@@ -197,16 +207,16 @@ void EventLoop::handle_accept(fd_t listener_fd) {
             std::fprintf(stderr, "event_loop: accept_client failed: %s\n", std::strerror(errno));
             break;
         }
-        std::fprintf(stdout, "client connected: %s -> %s:%u\n",
-                     client_ip.c_str(), target->host.c_str(), target->port);
-        std::fflush(stdout);
-
         BackendInstance* chosen = load_balancer_->select(target->backends);
         if (chosen == nullptr) {
             std::fprintf(stderr, "event_loop: no healthy backend for port %u\n", listen_port);
             close_fd(client_fd);
             continue;
         }
+
+        std::fprintf(stdout, "client connected: %s -> %s:%u\n",
+                     client_ip.c_str(), chosen->host.c_str(), chosen->port);
+        std::fflush(stdout);
         chosen->active_connections.fetch_add(1);
 
         fd_t backend_fd = connect_to_backend(chosen->host, chosen->port);
@@ -291,9 +301,6 @@ void EventLoop::handle_read(fd_t fd) {
     }
     if (bytes == 0) {
         if (fd == conn->client_fd) {
-            // client closed — flush pending data to backend, then half-close the
-            // write side of the backend socket so the backend knows we are done.
-            // keep backend_fd monitored so we can still receive its response.
             while (*pipe_bytes > 0) {
                 ssize_t w = splice(pipe_read, nullptr, peer_fd, nullptr, *pipe_bytes, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
                 if (w <= 0) break;
@@ -302,8 +309,6 @@ void EventLoop::handle_read(fd_t fd) {
             ::shutdown(peer_fd, SHUT_WR);
             epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
         } else {
-            // backend closed — flush any response data back to the client, then
-            // tear down the whole connection.
             while (*pipe_bytes > 0) {
                 ssize_t w = splice(pipe_read, nullptr, peer_fd, nullptr, *pipe_bytes, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
                 if (w <= 0) break;

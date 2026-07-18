@@ -1,14 +1,17 @@
-// router.cpp — Implementation of the Router route table.
+// router.cpp — Implementation of the Router route table and BackendInstance.
 #include "router.h"
+
+BackendInstance::BackendInstance(const std::string& h, uint16_t p)
+    : host(h), port(p), active_connections(0), is_healthy(true) {}
 
 Router Router::from_config(const GatewayConfig& config) {
     Router router;
     for (const auto& svc : config.services) {
         ServiceTarget target;
         target.name = svc.name;
-        target.host = svc.backend.host;
-        target.port = svc.backend.port;
-        target.backends.push_back(std::make_shared<BackendInstance>(svc.backend.host, svc.backend.port));
+        for (const BackendTarget& bt : svc.backends) {
+            target.backends.push_back(std::make_shared<BackendInstance>(bt.host, bt.port));
+        }
         router.add_route(svc.listen_port, std::move(target));
     }
     return router;
