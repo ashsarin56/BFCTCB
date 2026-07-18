@@ -25,6 +25,7 @@ add_executable(gateway
     src/core/data_forwarder.cpp
     src/config/config_parser.cpp
     src/routing/router.cpp
+    src/routing/load_balancer.cpp
 )
 
 target_include_directories(gateway PRIVATE include src)
