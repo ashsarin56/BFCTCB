@@ -207,7 +207,7 @@ void EventLoop::handle_accept(fd_t listener_fd) {
             std::fprintf(stderr, "event_loop: accept_client failed: %s\n", std::strerror(errno));
             break;
         }
-        BackendInstance* chosen = load_balancer_->select(target->backends);
+        BackendInstance* chosen = load_balancer_->choose_server(target->backends);
         if (chosen == nullptr) {
             std::fprintf(stderr, "event_loop: no healthy backend for port %u\n", listen_port);
             close_fd(client_fd);

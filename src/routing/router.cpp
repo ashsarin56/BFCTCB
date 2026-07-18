@@ -17,8 +17,7 @@ Router Router::from_config(const GatewayConfig& config) {
     return router;
 }
 
-BackendInstance::BackendInstance(const std::string& h, uint16_t p)
-    : host(h), port(p), active_connections(0), is_healthy(true) {}
+
 
 void Router::add_route(uint16_t listen_port, ServiceTarget target) {
     // Inserting with [] overwrites any previously registered route for this port (last write wins).
