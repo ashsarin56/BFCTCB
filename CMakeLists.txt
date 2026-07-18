@@ -22,6 +22,7 @@ add_executable(gateway
     src/core/socket_utils.cpp
     src/core/proxy_session.cpp
     src/core/event_loop.cpp
+    src/core/data_forwarder.cpp
     src/config/config_parser.cpp
     src/routing/router.cpp
 )
