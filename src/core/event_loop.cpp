@@ -62,8 +62,11 @@ bool EventLoop::init(const Router& router) {
             return false;
         }
         listeners_[listener_fd] = port;
-        std::fprintf(stdout, "gateway listening on port %u -> %s:%u (%s)\n",
-                     port, target.host.c_str(), target.port, target.name.c_str());
+        if (!target.backends.empty()) {
+            std::fprintf(stdout, "gateway listening on port %u -> %s:%u (%s)\n", port, target.backends[0]->host.c_str(), target.backends[0]->port, target.name.c_str());
+        } else {
+            std::fprintf(stdout, "gateway listening on port %u (%s, no backends)\n", port, target.name.c_str());
+        }
         std::fflush(stdout);
     }
     return true;
@@ -132,11 +135,17 @@ void EventLoop::handle_accept(fd_t listener_fd) {
             std::fprintf(stderr, "event_loop: accept_client failed: %s\n", std::strerror(errno));
             break;
         }
+        if (target->backends.empty()) {
+            std::fprintf(stderr, "event_loop: no backends configured for port %u\n", listen_port);
+            close_fd(client_fd);
+            continue;
+        }
+        BackendInstance* chosen = target->backends[0].get();
         std::fprintf(stdout, "client connected: %s -> %s:%u\n",
-                     client_ip.c_str(), target->host.c_str(), target->port);
+                     client_ip.c_str(), chosen->host.c_str(), chosen->port);
         std::fflush(stdout);
 
-        fd_t backend_fd = connect_to_backend(target->host, target->port);
+        fd_t backend_fd = connect_to_backend(chosen->host, chosen->port);
         if (backend_fd == INVALID_FD) {
             std::fprintf(stderr, "event_loop: backend connection failed, dropping client\n");
             close_fd(client_fd);
@@ -216,9 +225,6 @@ void EventLoop::handle_read(fd_t fd) {
     }
     if (bytes == 0) {
         if (fd == conn->client_fd) {
-            // client closed — flush pending data to backend, then half-close the
-            // write side of the backend socket so the backend knows we are done.
-            // keep backend_fd monitored so we can still receive its response.
             while (*pipe_bytes > 0) {
                 ssize_t w = splice(pipe_read, nullptr, peer_fd, nullptr, *pipe_bytes, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
                 if (w <= 0) break;
@@ -227,8 +233,6 @@ void EventLoop::handle_read(fd_t fd) {
             ::shutdown(peer_fd, SHUT_WR);
             epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
         } else {
-            // backend closed — flush any response data back to the client, then
-            // tear down the whole connection.
             while (*pipe_bytes > 0) {
                 ssize_t w = splice(pipe_read, nullptr, peer_fd, nullptr, *pipe_bytes, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
                 if (w <= 0) break;
@@ -240,7 +244,6 @@ void EventLoop::handle_read(fd_t fd) {
     }
     *pipe_bytes += bytes;
 
-    // immediately try to forward to peer
     ssize_t w = splice(pipe_read, nullptr, peer_fd, nullptr, *pipe_bytes, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
     if (w > 0) {
         *pipe_bytes -= w;

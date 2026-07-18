@@ -1,15 +1,25 @@
 #pragma once
-// router.h — Route table mapping listen ports to backend service targets.
+// router.h — Route table mapping listen ports to backend service pools.
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
+#include <memory>
+#include <atomic>
 #include "config/config_types.h"
 
-// Describes a backend service the gateway can forward traffic to.
+struct BackendInstance {
+    std::string host;
+    uint16_t port;
+    std::atomic<int> active_connections;
+    std::atomic<bool> is_healthy;
+
+    BackendInstance(const std::string& h, uint16_t p);
+};
+
 struct ServiceTarget {
-    std::string name;  // for logging
-    std::string host;  // Backend host 
-    uint16_t    port;  // Backend port
+    std::string name;
+    std::vector<std::shared_ptr<BackendInstance>> backends;
 };
 
 
