@@ -27,9 +27,13 @@ GatewayConfig ConfigParser::parse(const std::string& filepath) {
         sc.name        = svc["name"].as<std::string>();
         sc.listen_port = svc["listen_port"].as<uint16_t>();
 
-        const YAML::Node& backend = svc["backend"];
-        sc.backend.host = backend["host"].as<std::string>();
-        sc.backend.port = backend["port"].as<uint16_t>();
+        const YAML::Node& backends = svc["backends"];
+        for (const auto& b : backends) {
+            BackendTarget bt;
+            bt.host = b["host"].as<std::string>();
+            bt.port = b["port"].as<uint16_t>();
+            sc.backends.push_back(bt);
+        }
 
         config.services.push_back(sc);
     }
