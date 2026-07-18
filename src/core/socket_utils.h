@@ -1,5 +1,4 @@
-// socket_utils.h - TCP socket helper declarations (create_listener, accept_client,
-//   set_nonblocking, close_fd, connect_to_backend)
+// socket_utils.h - TCP socket helper declarations
 #pragma once
 
 #include <cstdint>
