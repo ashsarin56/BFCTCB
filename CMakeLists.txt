@@ -17,12 +17,15 @@ set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(yaml-cpp)
 
+find_package(Threads REQUIRED)
+
 add_executable(gateway
     src/main.cpp
     src/core/socket_utils.cpp
     src/core/proxy_session.cpp
     src/core/event_loop.cpp
     src/core/data_forwarder.cpp
+    src/core/health_checker.cpp
     src/config/config_parser.cpp
     src/routing/router.cpp
     src/routing/load_balancer.cpp
@@ -30,4 +33,4 @@ add_executable(gateway
 
 target_include_directories(gateway PRIVATE include src)
 target_compile_options(gateway PRIVATE -Wall -Wextra)
-target_link_libraries(gateway PRIVATE yaml-cpp::yaml-cpp)
+target_link_libraries(gateway PRIVATE yaml-cpp::yaml-cpp Threads::Threads)
