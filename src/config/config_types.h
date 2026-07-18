@@ -12,7 +12,7 @@ struct BackendTarget {
 struct ServiceConfig {
     std::string name;
     uint16_t listen_port;
-    BackendTarget backend;
+    std::vector<BackendTarget> backends;  // changed from single BackendTarget to vector
 };
 
 struct GatewayConfig {
