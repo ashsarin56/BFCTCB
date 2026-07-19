@@ -1,6 +1,5 @@
 name: network-gateway
 services:
-  # Interactive development - build and test inside the container
   gateway-dev:
     build:
       context: .
@@ -10,5 +9,21 @@ services:
     working_dir: /app
     stdin_open: true
     tty: true
-    # Tests run entirely inside the container (no port exposure needed).
-    # To test the gateway from the host, add:  ports: ["8080:8080", "8443:8443"]
+
+  dashboard-dev:
+    build:
+      context: .
+      target: dashboard-dev
+    volumes:
+      - ./dashboard:/app/dashboard
+      - dashboard-node-modules:/app/dashboard/node_modules
+      - /tmp:/tmp
+    working_dir: /app/dashboard
+    command: npm start
+    ports:
+      - "3000:3000"
+    stdin_open: true
+    tty: true
+
+volumes:
+  dashboard-node-modules:

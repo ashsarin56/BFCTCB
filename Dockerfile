@@ -26,6 +26,20 @@ RUN mkdir -p build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
     && make -j$(nproc)
 
+# ── Dashboard stage: Node/Express observability UI ──
+FROM node:20-bookworm-slim AS dashboard-dev
+
+WORKDIR /app/dashboard
+
+COPY dashboard/package*.json ./
+RUN npm ci
+
+COPY dashboard/ ./
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+
 # ── Runtime stage: minimal image for deployment ──
 FROM ubuntu:22.04 AS runtime
 
