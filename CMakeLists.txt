@@ -29,6 +29,7 @@ add_executable(gateway
     src/config/config_parser.cpp
     src/routing/router.cpp
     src/routing/load_balancer.cpp
+    src/observability/observer.cpp
 )
 
 target_include_directories(gateway PRIVATE include src)

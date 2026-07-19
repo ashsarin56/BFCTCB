@@ -3,6 +3,7 @@
 #include "socket_utils.h"
 #include "data_forwarder.h"
 #include "config/config_parser.h"
+#include "observability/observer.h"
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -14,7 +15,7 @@
 static constexpr int MAX_EVENTS = 64;
 
 EventLoop::EventLoop()
-    : epoll_fd_(INVALID_FD), running_(false), reload_pending_(false) {}
+    : epoll_fd_(INVALID_FD), running_(false), reload_pending_(false), obs_queue_(nullptr) {}
 
 EventLoop::~EventLoop() {
     for (auto& pair : connections_) {
@@ -35,23 +36,34 @@ bool EventLoop::init(const std::string& config_path, const Router& router, LoadB
     router_ = router;
     load_balancer_ = &lb;
 
+    if (g_observer) {
+        obs_queue_ = g_observer->register_thread();
+    } else {
+        obs_queue_ = nullptr;
+    }
+
     epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == INVALID_FD) {
-        std::fprintf(stderr, "event_loop: epoll_create1 failed: %s\n", std::strerror(errno));
+        if (g_observer && obs_queue_) {
+            g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, std::string("event_loop: epoll_create1 failed: ") + std::strerror(errno));
+        }
         return false;
     }
 
     for (const auto& entry : router.get_routes()) {
         uint16_t port = entry.first;
-        const ServiceTarget& target = entry.second;
 
         fd_t listener_fd = create_listener(port);
         if (listener_fd == INVALID_FD) {
-            std::fprintf(stderr, "event_loop: failed to create listener on port %u\n", port);
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "event_loop: failed to create listener on port " + std::to_string(port));
+            }
             return false;
         }
         if (!set_nonblocking(listener_fd)) {
-            std::fprintf(stderr, "event_loop: failed to set listener non-blocking on port %u\n", port);
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "event_loop: failed to set listener non-blocking on port " + std::to_string(port));
+            }
             close_fd(listener_fd);
             return false;
         }
@@ -59,20 +71,13 @@ bool EventLoop::init(const std::string& config_path, const Router& router, LoadB
         ev.events  = EPOLLIN;
         ev.data.fd = listener_fd;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listener_fd, &ev) < 0) {
-            std::fprintf(stderr, "event_loop: epoll_ctl add listener failed for port %u: %s\n",
-                         port, std::strerror(errno));
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "event_loop: epoll_ctl add listener failed for port " + std::to_string(port) + ": " + std::strerror(errno));
+            }
             close_fd(listener_fd);
             return false;
         }
         listeners_[listener_fd] = port;
-        if (!target.backends.empty()) {
-            std::fprintf(stdout, "gateway listening on port %u -> %s:%u (%s)\n",
-                         port, target.backends[0]->host.c_str(), target.backends[0]->port, target.name.c_str());
-        } else {
-            std::fprintf(stdout, "gateway listening on port %u (%s, no backends)\n",
-                         port, target.name.c_str());
-        }
-        std::fflush(stdout);
     }
     return true;
 }
@@ -81,9 +86,16 @@ void EventLoop::run() {
     running_ = true;
     struct epoll_event events[MAX_EVENTS];
     while (running_) {
-        if (reload_pending_) {
-            reload_pending_ = false;
-            reload_config();
+        if (reload_pending_.load(std::memory_order_acquire)) {
+            reload_pending_.store(false, std::memory_order_release);
+            std::unique_ptr<Router> new_router;
+            {
+                std::lock_guard<std::mutex> lock(pending_router_mutex_);
+                new_router = std::move(pending_router_);
+            }
+            if (new_router) {
+                apply_new_router(*new_router);
+            }
         }
         int n = epoll_wait(epoll_fd_, events, MAX_EVENTS, 100);
         if (n == 0) continue;
@@ -91,7 +103,9 @@ void EventLoop::run() {
             if (errno == EINTR) {
                 continue;
             }
-            std::fprintf(stderr, "event_loop: epoll_wait failed: %s\n", std::strerror(errno));
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, std::string("event_loop: epoll_wait failed: ") + std::strerror(errno));
+            }
             break;
         }
         for (int i = 0; i < n; ++i) {
@@ -128,17 +142,14 @@ void EventLoop::shutdown() {
     running_ = false;
 }
 
-void EventLoop::request_reload() {
-    reload_pending_ = true;
+void EventLoop::push_new_router(const Router& new_router) {
+    std::lock_guard<std::mutex> lock(pending_router_mutex_);
+    pending_router_ = std::make_unique<Router>(new_router);
+    reload_pending_.store(true, std::memory_order_release);
 }
 
-void EventLoop::reload_config() {
-    std::fprintf(stdout, "gateway reloading configuration...\n");
-    std::fflush(stdout);
+void EventLoop::apply_new_router(const Router& new_router) {
     try {
-        GatewayConfig config = ConfigParser::parse(config_path_);
-        Router new_router = Router::from_config(config);
-        
         std::unordered_map<uint16_t, fd_t> current_ports;
         for (const auto& pair : listeners_) {
             current_ports[pair.second] = pair.first;
@@ -156,14 +167,6 @@ void EventLoop::reload_config() {
                     ev.data.fd = listener_fd;
                     epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listener_fd, &ev);
                     listeners_[listener_fd] = port;
-                    const ServiceTarget& target = entry.second;
-                    if (!target.backends.empty()) {
-                        std::fprintf(stdout, "gateway dynamically listening on port %u -> %s:%u (%s)\n",
-                                     port, target.backends[0]->host.c_str(), target.backends[0]->port, target.name.c_str());
-                    } else {
-                        std::fprintf(stdout, "gateway dynamically listening on port %u (%s, no backends)\n",
-                                     port, target.name.c_str());
-                    }
                 }
             }
         }
@@ -176,13 +179,13 @@ void EventLoop::reload_config() {
                 epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
                 close_fd(fd);
                 listeners_.erase(fd);
-                std::fprintf(stdout, "gateway stopped listening on port %u\n", port);
             }
         }
-        std::fflush(stdout);
         router_ = new_router;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "gateway config reload failed: %s\n", e.what());
+        if (g_observer && obs_queue_) {
+            g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, std::string("gateway config reload failed: ") + e.what());
+        }
     }
 }
 
@@ -194,7 +197,9 @@ void EventLoop::handle_accept(fd_t listener_fd) {
     uint16_t listen_port = lit->second;
     const ServiceTarget* target = router_.resolve(listen_port);
     if (target == nullptr) {
-        std::fprintf(stderr, "event_loop: no route for port %u\n", listen_port);
+        if (g_observer && obs_queue_) {
+            g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "event_loop: no route for port " + std::to_string(listen_port));
+        }
         return;
     }
     while (true) {
@@ -204,19 +209,20 @@ void EventLoop::handle_accept(fd_t listener_fd) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
-            std::fprintf(stderr, "event_loop: accept_client failed: %s\n", std::strerror(errno));
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, std::string("event_loop: accept_client failed: ") + std::strerror(errno));
+            }
             break;
         }
         BackendInstance* chosen = load_balancer_->choose_server(target->backends);
         if (chosen == nullptr) {
-            std::fprintf(stderr, "event_loop: no healthy backend for port %u\n", listen_port);
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "event_loop: no healthy backend for port " + std::to_string(listen_port));
+            }
             close_fd(client_fd);
             continue;
         }
 
-        std::fprintf(stdout, "client connected: %s -> %s:%u\n",
-                     client_ip.c_str(), chosen->host.c_str(), chosen->port);
-        std::fflush(stdout);
         chosen->active_connections.fetch_add(1);
 
         fd_t backend_fd = connect_to_backend(chosen->host, chosen->port);
@@ -227,7 +233,9 @@ void EventLoop::handle_accept(fd_t listener_fd) {
             continue;
         }
         if (!set_nonblocking(client_fd) || !set_nonblocking(backend_fd)) {
-            std::fprintf(stderr, "event_loop: failed to set fds non-blocking\n");
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "event_loop: failed to set fds non-blocking");
+            }
             close_fd(client_fd);
             close_fd(backend_fd);
             continue;
@@ -236,6 +244,8 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         conn->client_fd  = client_fd;
         conn->backend_fd = backend_fd;
         conn->backend_instance = chosen;
+        conn->client_ip = client_ip;
+        conn->service_name = target->name;
 
         if (!DataForwarder::init_pipes(conn.get())) {
             close_fd(client_fd);
@@ -246,7 +256,9 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         ev.events  = EPOLLIN;
         ev.data.fd = client_fd;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &ev) < 0) {
-            std::fprintf(stderr, "event_loop: epoll_ctl add client_fd failed: %s\n", std::strerror(errno));
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, std::string("event_loop: epoll_ctl add client_fd failed: ") + std::strerror(errno));
+            }
             close_fd(client_fd);
             close_fd(backend_fd);
             continue;
@@ -254,7 +266,9 @@ void EventLoop::handle_accept(fd_t listener_fd) {
 
         ev.data.fd = backend_fd;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, backend_fd, &ev) < 0) {
-            std::fprintf(stderr, "event_loop: epoll_ctl add backend_fd failed: %s\n", std::strerror(errno));
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, std::string("event_loop: epoll_ctl add backend_fd failed: ") + std::strerror(errno));
+            }
             epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
             close_fd(client_fd);
             close_fd(backend_fd);
@@ -262,8 +276,13 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         }
         connections_[client_fd]  = conn;
         connections_[backend_fd] = conn;
-        std::fprintf(stdout, "paired client fd %d with backend fd %d\n", client_fd, backend_fd);
-        std::fflush(stdout);
+        
+        g_metrics.total_connections.fetch_add(1, std::memory_order_relaxed);
+        g_metrics.active_connections.fetch_add(1, std::memory_order_relaxed);
+        if (g_observer) {
+            std::string log_msg = client_ip + " -> " + chosen->host + ":" + std::to_string(chosen->port) + " | " + target->name + " | Active connections: " + std::to_string(g_metrics.active_connections.load());
+            g_observer->record_event(obs_queue_, EventType::CLIENT_CONNECTED, client_fd, backend_fd, log_msg);
+        }
     }
 }
 
@@ -319,6 +338,11 @@ void EventLoop::handle_read(fd_t fd) {
         return;
     }
     *pipe_bytes += bytes;
+    if (fd == conn->client_fd) {
+        g_metrics.bytes_c2b.fetch_add(bytes, std::memory_order_relaxed);
+    } else {
+        g_metrics.bytes_b2c.fetch_add(bytes, std::memory_order_relaxed);
+    }
 
     // immediately try to forward to peer
     ssize_t w = splice(pipe_read, nullptr, peer_fd, nullptr, *pipe_bytes, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
@@ -391,6 +415,9 @@ void EventLoop::handle_disconnect(fd_t fd) {
         auto conn = it->second;
         if (conn->backend_fd == fd && conn->backend_instance) {
             conn->backend_instance->is_healthy.store(false, std::memory_order_release);
+            if (g_observer) {
+                g_observer->record_event(obs_queue_, EventType::BACKEND_ERROR, conn->client_fd, conn->backend_fd, conn->backend_instance->host);
+            }
         }
     }
     remove_connection(fd);
@@ -414,4 +441,10 @@ void EventLoop::remove_connection(fd_t fd) {
     DataForwarder::close_pipes(conn.get());
     connections_.erase(conn->client_fd);
     connections_.erase(conn->backend_fd);
+    
+    g_metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+    if (g_observer) {
+        std::string log_msg = conn->client_ip + " -> " + conn->backend_instance->host + ":" + std::to_string(conn->backend_instance->port) + " | " + conn->service_name + " disconnected | Active connections: " + std::to_string(g_metrics.active_connections.load());
+        g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, conn->client_fd, conn->backend_fd, log_msg);
+    }
 }

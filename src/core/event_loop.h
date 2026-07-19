@@ -9,6 +9,9 @@
 #include <unordered_map>
 #include <vector>
 #include <atomic>
+#include <mutex>
+
+class EventQueue;
 
 struct Connection {
     fd_t client_fd;
@@ -18,6 +21,8 @@ struct Connection {
     size_t c2b_pipe_bytes;
     size_t b2c_pipe_bytes;
     BackendInstance* backend_instance;  // tracks which backend this connection uses
+    std::string client_ip;
+    std::string service_name;
 };
 
 class EventLoop {
@@ -27,17 +32,20 @@ public:
     bool init(const std::string& config_path, const Router& router, LoadBalancer& lb);
     void run();
     void shutdown();
-    void request_reload();
+    void push_new_router(const Router& new_router);
 
 private:
-    void reload_config();
+    void apply_new_router(const Router& new_router);
     fd_t epoll_fd_;
     std::atomic<bool> running_;
     std::atomic<bool> reload_pending_;
+    std::mutex pending_router_mutex_;
+    std::unique_ptr<Router> pending_router_;
     std::string config_path_;
     std::unordered_map<fd_t, uint16_t> listeners_;
     Router router_;
     LoadBalancer* load_balancer_;
+    EventQueue* obs_queue_;
     std::unordered_map<fd_t, std::shared_ptr<Connection>> connections_;
 
     void handle_accept(fd_t listener_fd);
