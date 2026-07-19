@@ -178,6 +178,8 @@ void ObservabilityWorker::handle_admin_request(fd_t client_fd) {
         response = generate_metrics_json();
     } else if (req.find("GET_EVENTS") != std::string::npos) {
         response = generate_events_json();
+    } else if (req.find("GET_TOPOLOGY") != std::string::npos) {
+        response = generate_topology_json();
     } else {
         response = "{\"error\": \"unknown command\"}\n";
     }
@@ -227,5 +229,31 @@ std::string ObservabilityWorker::generate_events_json() {
         }
     }
     json += "]\n";
+    return json;
+}
+
+void ObservabilityWorker::update_router(const Router& new_router) {
+    std::lock_guard<std::mutex> lock(router_mutex_);
+    router_ = new_router;
+}
+
+std::string ObservabilityWorker::generate_topology_json() {
+    std::lock_guard<std::mutex> lock(router_mutex_);
+    std::string json = "{\"services\": [";
+    bool first_service = true;
+    for (const auto& entry : router_.get_routes()) {
+        if (!first_service) json += ",";
+        first_service = false;
+        const ServiceTarget& target = entry.second;
+        json += "{\"name\": \"" + target.name + "\", \"listen_port\": " + std::to_string(entry.first) + ", \"backends\": [";
+        bool first_backend = true;
+        for (const auto& backend : target.backends) {
+            if (!first_backend) json += ",";
+            first_backend = false;
+            json += "{\"host\": \"" + backend->host + "\", \"port\": " + std::to_string(backend->port) + ", \"is_healthy\": " + (backend->is_healthy.load() ? "true" : "false") + ", \"active_connections\": " + std::to_string(backend->active_connections.load()) + "}";
+        }
+        json += "]}";
+    }
+    json += "]}\n";
     return json;
 }

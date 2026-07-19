@@ -89,6 +89,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     Router router = Router::from_config(config);
+    if (g_observer) {
+        g_observer->update_router(router);
+    }
     LoadBalancer load_balancer;
     
     HealthChecker health_checker(router, 5);
@@ -164,6 +167,7 @@ int main(int argc, char** argv) {
                     g_health_checker->update_router(new_router);
                 }
                 if (g_observer) {
+                    g_observer->update_router(new_router);
                     g_observer->record_event(g_main_queue, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "gateway configuration dynamically reloaded");
                 }
             } catch (const std::exception& e) {

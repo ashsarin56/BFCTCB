@@ -1,0 +1,12 @@
+{
+  "name": "gateway-dashboard",
+  "version": "1.0.0",
+  "description": "Observability Dashboard for Gateway",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
