@@ -16,6 +16,24 @@
 
 static constexpr int MAX_EVENTS = 64;
 
+namespace {
+void notify_client_disconnected(fd_t client_fd) {
+    static constexpr char kDisconnectMsg[] = "DISCONNECTED\n";
+    size_t offset = 0;
+    while (offset < sizeof(kDisconnectMsg) - 1) {
+        ssize_t sent = ::send(client_fd, kDisconnectMsg + offset, (sizeof(kDisconnectMsg) - 1) - offset, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (sent > 0) {
+            offset += static_cast<size_t>(sent);
+            continue;
+        }
+        if (sent < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+}
+}
+
 EventLoop::EventLoop()
     : epoll_fd_(INVALID_FD), running_(false), reload_pending_(false), obs_queue_(nullptr) {}
 
@@ -336,6 +354,9 @@ void EventLoop::handle_read(fd_t fd) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return;
         }
+        if (fd == conn->backend_fd) {
+            notify_client_disconnected(conn->client_fd);
+        }
         remove_connection(fd);
         return;
     }
@@ -354,6 +375,7 @@ void EventLoop::handle_read(fd_t fd) {
                 if (w <= 0) break;
                 *pipe_bytes -= w;
             }
+            notify_client_disconnected(conn->client_fd);
             remove_connection(fd);
         }
         return;
@@ -377,6 +399,9 @@ void EventLoop::handle_read(fd_t fd) {
     if (w > 0) {
         *pipe_bytes -= w;
     } else if (w < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        if (fd == conn->backend_fd) {
+            notify_client_disconnected(conn->client_fd);
+        }
         remove_connection(fd);
         return;
     }
@@ -424,6 +449,9 @@ void EventLoop::handle_write(fd_t fd) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return;
         }
+        if (fd == conn->backend_fd) {
+            notify_client_disconnected(conn->client_fd);
+        }
         remove_connection(fd);
         return;
     }
@@ -446,6 +474,7 @@ void EventLoop::handle_disconnect(fd_t fd) {
             if (g_observer) {
                 g_observer->record_event(obs_queue_, EventType::BACKEND_ERROR, conn->client_fd, conn->backend_fd, conn->backend_instance->host);
             }
+            notify_client_disconnected(conn->client_fd);
         }
     }
     remove_connection(fd);
