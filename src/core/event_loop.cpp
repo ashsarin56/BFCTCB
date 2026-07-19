@@ -216,28 +216,39 @@ void EventLoop::handle_accept(fd_t listener_fd) {
             }
             break;
         }
-        BackendInstance* chosen = load_balancer_->choose_server(target->backends);
-        if (chosen == nullptr) {
-            if (g_observer && obs_queue_) {
-                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "event_loop: no healthy backend for port " + std::to_string(listen_port));
+        int max_retries = static_cast<int>(target->backends.size());
+        BackendInstance* chosen = nullptr;
+        fd_t backend_fd = INVALID_FD;
+        for (int attempt = 0; attempt < max_retries; ++attempt) {
+            chosen = load_balancer_->choose_server(target->backends);
+            if (chosen == nullptr) {
+                break;
             }
-            close_fd(client_fd);
-            continue;
-        }
-
-        chosen->active_connections.fetch_add(1);
-
-        fd_t backend_fd = connect_to_backend(chosen->host, chosen->port);
-        if (backend_fd == INVALID_FD) {
+            chosen->active_connections.fetch_add(1);
+            backend_fd = connect_to_backend(chosen->host, chosen->port);
+            if (backend_fd != INVALID_FD) {
+                break;
+            }
             chosen->is_healthy.store(false, std::memory_order_release);
             chosen->active_connections.fetch_sub(1);
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::BACKEND_ERROR, client_fd, INVALID_FD, "[FAILOVER] " + chosen->host + ":" + std::to_string(chosen->port) + " (" + target->name + ") connect failed, marked unhealthy | client fd " + std::to_string(client_fd) + " retry " + std::to_string(attempt + 1) + "/" + std::to_string(max_retries) + ", load balancer selecting another server");
+            }
+            chosen = nullptr;
+        }
+        if (chosen == nullptr || backend_fd == INVALID_FD) {
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::BACKEND_ERROR, client_fd, INVALID_FD, "[FAILOVER] " + target->name + " all " + std::to_string(max_retries) + " backends exhausted for port " + std::to_string(listen_port) + ", client fd " + std::to_string(client_fd) + " dropped");
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, INVALID_FD, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | no healthy backend available");
+            }
             close_fd(client_fd);
             continue;
         }
         if (!set_nonblocking(client_fd) || !set_nonblocking(backend_fd)) {
             if (g_observer && obs_queue_) {
-                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "event_loop: failed to set fds non-blocking");
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | failed to set fds non-blocking");
             }
+            chosen->active_connections.fetch_sub(1);
             close_fd(client_fd);
             close_fd(backend_fd);
             continue;
@@ -250,6 +261,10 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         conn->service_name = target->name;
 
         if (!DataForwarder::init_pipes(conn.get())) {
+            if (g_observer && obs_queue_) {
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | pipe initialization failed");
+            }
+            chosen->active_connections.fetch_sub(1);
             close_fd(client_fd);
             close_fd(backend_fd);
             continue;
@@ -259,8 +274,9 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         ev.data.fd = client_fd;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &ev) < 0) {
             if (g_observer && obs_queue_) {
-                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, std::string("event_loop: epoll_ctl add client_fd failed: ") + std::strerror(errno));
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | epoll_ctl add client_fd failed");
             }
+            chosen->active_connections.fetch_sub(1);
             close_fd(client_fd);
             close_fd(backend_fd);
             continue;
@@ -269,8 +285,9 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         ev.data.fd = backend_fd;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, backend_fd, &ev) < 0) {
             if (g_observer && obs_queue_) {
-                g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, std::string("event_loop: epoll_ctl add backend_fd failed: ") + std::strerror(errno));
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | epoll_ctl add backend_fd failed");
             }
+            chosen->active_connections.fetch_sub(1);
             epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
             close_fd(client_fd);
             close_fd(backend_fd);
