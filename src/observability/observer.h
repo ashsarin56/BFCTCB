@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include "routing/router.h"
 #include <thread>
 #include <chrono>
 
@@ -81,6 +82,8 @@ public:
 
     EventQueue* register_thread();
     void record_event(EventQueue* queue, EventType type, fd_t client_fd, fd_t backend_fd, const std::string& metadata);
+    
+    void update_router(const Router& new_router);
 
 private:
     std::string socket_path_;
@@ -96,11 +99,15 @@ private:
     size_t history_head_{0};
     size_t history_count_{0};
 
+    Router router_;
+    std::mutex router_mutex_;
+
     void consume_events();
     void handle_admin_accept();
     void handle_admin_request(fd_t client_fd);
     std::string generate_metrics_json();
     std::string generate_events_json();
+    std::string generate_topology_json();
 };
 
 extern ObservabilityWorker* g_observer;

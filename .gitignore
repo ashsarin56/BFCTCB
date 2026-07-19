@@ -11,5 +11,6 @@ build/
 Thumbs.db
 
 tests/
-tests/.cache/
 .cache/
+dashboard/node_modules/
+gw_*.log
