@@ -10,11 +10,9 @@
 namespace DataForwarder {
     bool init_pipes(Connection* conn) {
         if (pipe2(conn->pipe_c2b, O_CLOEXEC | O_NONBLOCK) < 0) {
-            std::fprintf(stderr, "data_forwarder: pipe2 c2b failed: %s\n", std::strerror(errno));
             return false;
         }
         if (pipe2(conn->pipe_b2c, O_CLOEXEC | O_NONBLOCK) < 0) {
-            std::fprintf(stderr, "data_forwarder: pipe2 b2c failed: %s\n", std::strerror(errno));
             close_fd(conn->pipe_c2b[0]);
             close_fd(conn->pipe_c2b[1]);
             return false;

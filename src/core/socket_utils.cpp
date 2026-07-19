@@ -15,21 +15,17 @@
 fd_t create_listener(uint16_t port) {
   fd_t sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock == INVALID_FD) {
-    std::cerr << "socket() failed: " << std::strerror(errno) << "\n";
     return INVALID_FD;
   }
 
   int opt = 1;
   if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-    std::cerr << "setsockopt(SO_REUSEADDR) failed: " << std::strerror(errno)
-              << "\n";
     close(sock);
     return INVALID_FD;
   }
 
   int reuseport = 1;
   if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &reuseport, sizeof(reuseport)) < 0) {
-      std::cerr << "setsockopt(SO_REUSEPORT) failed: " << std::strerror(errno) << "\n";
       close(sock);
       return INVALID_FD;
   }
@@ -40,21 +36,18 @@ fd_t create_listener(uint16_t port) {
   addr.sin_port = htons(port);
 
   if (bind(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    std::cerr << "bind() failed on port " << port << ": "
-              << std::strerror(errno) << "\n";
     close(sock);
     return INVALID_FD;
   }
 
   if (listen(sock, 128) < 0) {
-    std::cerr << "listen() failed: " << std::strerror(errno) << "\n";
     close(sock);
     return INVALID_FD;
   }
 
   int qlen = 5;
   if (setsockopt(sock, IPPROTO_TCP, TCP_FASTOPEN, &qlen, sizeof(qlen)) < 0) {
-      std::cerr << "setsockopt(TCP_FASTOPEN) failed: " << std::strerror(errno) << "\n";
+      // Ignored if failed
   }
 
   return sock;
@@ -67,16 +60,12 @@ fd_t accept_client(fd_t listener_fd, std::string &client_ip_out) {
   fd_t client_fd = accept(
       listener_fd, reinterpret_cast<sockaddr *>(&client_addr), &addr_len);
   if (client_fd < 0) {
-    if (errno != EAGAIN && errno != EWOULDBLOCK) {
-      std::cerr << "accept() failed: " << std::strerror(errno) << "\n";
-    }
     return INVALID_FD;
   }
 
   char ip_buf[INET_ADDRSTRLEN];
   if (inet_ntop(AF_INET, &client_addr.sin_addr, ip_buf, sizeof(ip_buf)) ==
       nullptr) {
-    std::cerr << "inet_ntop() failed: " << std::strerror(errno) << "\n";
     client_ip_out = "unknown";
   } else {
     client_ip_out = ip_buf;
@@ -88,12 +77,10 @@ fd_t accept_client(fd_t listener_fd, std::string &client_ip_out) {
 bool set_nonblocking(fd_t fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
-    std::cerr << "fcntl(F_GETFL) failed: " << std::strerror(errno) << "\n";
     return false;
   }
 
   if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-    std::cerr << "fcntl(F_SETFL) failed: " << std::strerror(errno) << "\n";
     return false;
   }
 
@@ -115,22 +102,16 @@ void close_fd(fd_t fd) {
 fd_t connect_to_backend(const std::string &host, uint16_t port) {
   fd_t sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock == INVALID_FD) {
-    std::cerr << "connect_to_backend: socket() failed: " << std::strerror(errno)
-              << "\n";
     return INVALID_FD;
   }
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-    std::cerr << "connect_to_backend: inet_pton() failed for host " << host
-              << "\n";
     close(sock);
     return INVALID_FD;
   }
   if (connect(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    std::cerr << "connect_to_backend: connect() failed to " << host << ":"
-              << port << ": " << std::strerror(errno) << "\n";
     close(sock);
     return INVALID_FD;
   }
