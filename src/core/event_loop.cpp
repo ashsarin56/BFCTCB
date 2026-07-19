@@ -11,6 +11,8 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <chrono>
+#include <sstream>
 
 static constexpr int MAX_EVENTS = 64;
 
@@ -280,7 +282,7 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         g_metrics.total_connections.fetch_add(1, std::memory_order_relaxed);
         g_metrics.active_connections.fetch_add(1, std::memory_order_relaxed);
         if (g_observer) {
-            std::string log_msg = client_ip + " -> " + chosen->host + ":" + std::to_string(chosen->port) + " | " + target->name + " | Active connections: " + std::to_string(g_metrics.active_connections.load());
+            std::string log_msg = "[CLIENT_CONNECTED] " + chosen->host + ":" + std::to_string(chosen->port) + " (" + target->name + ") | " + std::to_string(backend_fd) + " <-> " + std::to_string(client_fd) + " | Active Connections: " + std::to_string(g_metrics.active_connections.load());
             g_observer->record_event(obs_queue_, EventType::CLIENT_CONNECTED, client_fd, backend_fd, log_msg);
         }
     }
@@ -310,7 +312,9 @@ void EventLoop::handle_read(fd_t fd) {
         pipe_bytes = &conn->b2c_pipe_bytes;
     }
 
+    auto start_time = std::chrono::high_resolution_clock::now();
     ssize_t bytes = splice(fd, nullptr, pipe_write, nullptr, BUFFER_SIZE, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+    auto end_time = std::chrono::high_resolution_clock::now();
     if (bytes < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return;
@@ -340,6 +344,13 @@ void EventLoop::handle_read(fd_t fd) {
     *pipe_bytes += bytes;
     if (fd == conn->client_fd) {
         g_metrics.bytes_c2b.fetch_add(bytes, std::memory_order_relaxed);
+        if (g_observer) {
+            std::ostringstream ss;
+            ss << std::this_thread::get_id();
+            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+            std::string log_msg = "[REQUEST] | " + conn->backend_instance->host + ":" + std::to_string(conn->backend_instance->port) + " (" + conn->service_name + ") | Thread " + ss.str() + " | " + std::to_string(bytes) + " bytes | latency: " + std::to_string(duration) + " us (TCP splice)";
+            g_observer->record_event(obs_queue_, EventType::SYSTEM_LOG, conn->client_fd, conn->backend_fd, log_msg);
+        }
     } else {
         g_metrics.bytes_b2c.fetch_add(bytes, std::memory_order_relaxed);
     }
@@ -444,7 +455,7 @@ void EventLoop::remove_connection(fd_t fd) {
     
     g_metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
     if (g_observer) {
-        std::string log_msg = conn->client_ip + " -> " + conn->backend_instance->host + ":" + std::to_string(conn->backend_instance->port) + " | " + conn->service_name + " disconnected | Active connections: " + std::to_string(g_metrics.active_connections.load());
+        std::string log_msg = "[CLIENT_DISCONNECTED] " + conn->backend_instance->host + ":" + std::to_string(conn->backend_instance->port) + " (" + conn->service_name + ") | Active Connections: " + std::to_string(g_metrics.active_connections.load());
         g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, conn->client_fd, conn->backend_fd, log_msg);
     }
 }
