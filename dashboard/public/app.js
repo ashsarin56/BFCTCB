@@ -59,6 +59,19 @@ async function fetchTopology() {
                     bkdNode.querySelector('.backend-host').textContent = `${bkd.host}:${bkd.port}`;
                     bkdNode.querySelector('.backend-conns').textContent = bkd.active_connections;
                     
+                    const actionBtn = bkdNode.querySelector('.backend-action-btn');
+                    if (bkd.is_healthy) {
+                        actionBtn.textContent = '⏹';
+                        actionBtn.title = 'Stop Backend';
+                        actionBtn.classList.add('stop-btn');
+                        actionBtn.onclick = () => stopBackend(bkd.port);
+                    } else {
+                        actionBtn.textContent = '▶';
+                        actionBtn.title = 'Start Backend';
+                        actionBtn.classList.add('play-btn');
+                        actionBtn.onclick = () => startBackend(bkd.port);
+                    }
+                    
                     backendsList.appendChild(bkdNode);
                 });
                 
@@ -123,3 +136,73 @@ setInterval(() => {
 fetchMetrics();
 fetchTopology();
 fetchEvents();
+
+// Modal Logic
+const modal = document.getElementById('add-service-modal');
+const addBtn = document.getElementById('add-service-btn');
+const closeBtn = document.getElementById('close-modal-btn');
+const form = document.getElementById('add-service-form');
+
+if (addBtn && modal && closeBtn) {
+    addBtn.onclick = () => modal.classList.add('active');
+    closeBtn.onclick = () => {
+        modal.classList.remove('active');
+        form.reset();
+    };
+}
+
+if (form) {
+    form.onsubmit = async (e) => {
+        e.preventDefault();
+        const serviceName = document.getElementById('service-name').value;
+        const listenPort = parseInt(document.getElementById('listen-port').value);
+        const backendHost = document.getElementById('backend-host').value;
+        const backendPort = parseInt(document.getElementById('backend-port').value);
+
+        const payload = {
+            name: serviceName,
+            listen_port: listenPort,
+            backends: [{ host: backendHost, port: backendPort }]
+        };
+
+        try {
+            const res = await fetch(`${API_BASE}/service`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                modal.classList.remove('active');
+                form.reset();
+                fetchTopology();
+            } else {
+                console.error("Failed to save service");
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    };
+}
+
+async function startBackend(port) {
+    try {
+        await fetch(`${API_BASE}/backend/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ port })
+        });
+        setTimeout(fetchTopology, 500); // short delay to let it come up
+    } catch (e) { console.error(e); }
+}
+
+async function stopBackend(port) {
+    try {
+        await fetch(`${API_BASE}/backend/stop`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ port })
+        });
+        setTimeout(fetchTopology, 500); // short delay to let it go down
+    } catch (e) { console.error(e); }
+}
+

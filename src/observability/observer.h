@@ -16,7 +16,8 @@ enum class EventType {
     CLIENT_DISCONNECTED,
     BACKEND_ERROR,
     HEALTH_STATE_CHANGED,
-    SYSTEM_LOG
+    SYSTEM_LOG,
+    LOAD_BALANCER
 };
 
 struct EventRecord {

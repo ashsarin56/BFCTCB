@@ -22,7 +22,6 @@ find_package(Threads REQUIRED)
 add_executable(gateway
     src/main.cpp
     src/core/socket_utils.cpp
-    src/core/proxy_session.cpp
     src/core/event_loop.cpp
     src/core/data_forwarder.cpp
     src/core/health_checker.cpp

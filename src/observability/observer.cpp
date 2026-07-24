@@ -14,6 +14,17 @@ ObservabilityWorker* g_observer = nullptr;
 static constexpr int MAX_EPOLL_EVENTS = 16;
 static constexpr int POLL_TIMEOUT_MS = 100;
 
+static const char* event_type_to_string(EventType type);
+
+static void replace_all(std::string& str, const std::string& from, const std::string& to) {
+    if (from.empty()) return;
+    size_t start_pos = 0;
+    while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
+        str.replace(start_pos, from.length(), to);
+        start_pos += to.length(); 
+    }
+}
+
 ObservabilityWorker::ObservabilityWorker(const std::string& socket_path)
     : socket_path_(socket_path), epoll_fd_(INVALID_FD), admin_fd_(INVALID_FD), running_(false) {
     event_history_.resize(MAX_EVENTS);
@@ -121,6 +132,8 @@ void ObservabilityWorker::record_event(EventQueue* queue, EventType type, fd_t c
 }
 
 void ObservabilityWorker::consume_events() {
+    const bool use_color = (isatty(fileno(stdout)) != 0);
+
     std::lock_guard<std::mutex> lock(queues_mutex_);
     for (auto& queue : thread_queues_) {
         EventRecord record;
@@ -133,7 +146,17 @@ void ObservabilityWorker::consume_events() {
             }
             
             if (record.type != EventType::SYSTEM_LOG || !record.metadata.empty()) {
-                std::printf("[OBSERVABILITY] %s\n", record.metadata.c_str());
+                std::string full_msg = "[OBSERVABILITY][" + std::string(event_type_to_string(record.type)) + "] " + record.metadata;
+                
+                if (use_color) {
+                    replace_all(full_msg, "[OBSERVABILITY]", "\x1b[1;33m[OBSERVABILITY]\x1b[0m");
+                    replace_all(full_msg, "[CLIENT_CONNECTED]", "\x1b[1;32m[CLIENT_CONNECTED]\x1b[0m");
+                    replace_all(full_msg, "[CLIENT_DISCONNECTED]", "\x1b[1;31m[CLIENT_DISCONNECTED]\x1b[0m");
+                    replace_all(full_msg, "[LOAD_BALANCER]", "\x1b[1;34m[LOAD_BALANCER]\x1b[0m");
+                    replace_all(full_msg, "[HEALTH_CHECKER]", "\x1b[1;35m[HEALTH_CHECKER]\x1b[0m");
+                }
+                
+                std::printf("%s\n", full_msg.c_str());
                 std::fflush(stdout);
             }
         }
@@ -194,8 +217,9 @@ static const char* event_type_to_string(EventType type) {
     if (type == EventType::CLIENT_CONNECTED) return "CLIENT_CONNECTED";
     if (type == EventType::CLIENT_DISCONNECTED) return "CLIENT_DISCONNECTED";
     if (type == EventType::BACKEND_ERROR) return "BACKEND_ERROR";
-    if (type == EventType::HEALTH_STATE_CHANGED) return "HEALTH_STATE_CHANGED";
+    if (type == EventType::HEALTH_STATE_CHANGED) return "HEALTH_CHECKER";
     if (type == EventType::SYSTEM_LOG) return "SYSTEM_LOG";
+    if (type == EventType::LOAD_BALANCER) return "LOAD_BALANCER";
     return "UNKNOWN";
 }
 

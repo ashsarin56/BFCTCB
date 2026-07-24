@@ -169,6 +169,27 @@ int main(int argc, char** argv) {
                 if (g_observer) {
                     g_observer->update_router(new_router);
                     g_observer->record_event(g_main_queue, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, "gateway configuration dynamically reloaded");
+
+                    int total_servers = 0;
+                    int healthy_servers = 0;
+                    for (const auto& entry : new_router.get_routes()) {
+                        const ServiceTarget& target = entry.second;
+                        std::string log_msg = "Listening on -> ";
+                        if (!target.backends.empty()) {
+                            log_msg += target.backends[0]->host + ":" + std::to_string(target.backends[0]->port);
+                        } else {
+                            log_msg += "no backends";
+                        }
+                        log_msg += " (" + target.name + ") {" + std::to_string(num_workers) + " threads}";
+                        g_observer->record_event(g_main_queue, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, log_msg);
+
+                        for (const auto& backend : target.backends) {
+                            total_servers++;
+                            if (backend->is_healthy.load()) healthy_servers++;
+                        }
+                    }
+                    std::string stats_msg = "Config Reloaded | " + std::to_string(total_servers) + " servers | " + std::to_string(healthy_servers) + " healthy | 0 connected";
+                    g_observer->record_event(g_main_queue, EventType::SYSTEM_LOG, INVALID_FD, INVALID_FD, stats_msg);
                 }
             } catch (const std::exception& e) {
                 if (g_observer) {

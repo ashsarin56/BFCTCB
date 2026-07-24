@@ -238,7 +238,7 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         BackendInstance* chosen = nullptr;
         fd_t backend_fd = INVALID_FD;
         for (int attempt = 0; attempt < max_retries; ++attempt) {
-            chosen = load_balancer_->choose_server(target->backends);
+            chosen = load_balancer_->choose_server(target->backends, obs_queue_, client_fd);
             if (chosen == nullptr) {
                 break;
             }
@@ -257,14 +257,14 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         if (chosen == nullptr || backend_fd == INVALID_FD) {
             if (g_observer && obs_queue_) {
                 g_observer->record_event(obs_queue_, EventType::BACKEND_ERROR, client_fd, INVALID_FD, "[FAILOVER] " + target->name + " all " + std::to_string(max_retries) + " backends exhausted for port " + std::to_string(listen_port) + ", client fd " + std::to_string(client_fd) + " dropped");
-                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, INVALID_FD, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | no healthy backend available");
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, INVALID_FD, client_ip + " (" + target->name + ") | no healthy backend available");
             }
             close_fd(client_fd);
             continue;
         }
         if (!set_nonblocking(client_fd) || !set_nonblocking(backend_fd)) {
             if (g_observer && obs_queue_) {
-                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | failed to set fds non-blocking");
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, client_ip + " (" + target->name + ") | failed to set fds non-blocking");
             }
             chosen->active_connections.fetch_sub(1);
             close_fd(client_fd);
@@ -280,7 +280,7 @@ void EventLoop::handle_accept(fd_t listener_fd) {
 
         if (!DataForwarder::init_pipes(conn.get())) {
             if (g_observer && obs_queue_) {
-                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | pipe initialization failed");
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, client_ip + " (" + target->name + ") | pipe initialization failed");
             }
             chosen->active_connections.fetch_sub(1);
             close_fd(client_fd);
@@ -292,7 +292,7 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         ev.data.fd = client_fd;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &ev) < 0) {
             if (g_observer && obs_queue_) {
-                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | epoll_ctl add client_fd failed");
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, client_ip + " (" + target->name + ") | epoll_ctl add client_fd failed");
             }
             chosen->active_connections.fetch_sub(1);
             close_fd(client_fd);
@@ -303,7 +303,7 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         ev.data.fd = backend_fd;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, backend_fd, &ev) < 0) {
             if (g_observer && obs_queue_) {
-                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, "[CLIENT_DISCONNECTED] " + client_ip + " (" + target->name + ") | epoll_ctl add backend_fd failed");
+                g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, client_fd, backend_fd, client_ip + " (" + target->name + ") | epoll_ctl add backend_fd failed");
             }
             chosen->active_connections.fetch_sub(1);
             epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
@@ -317,7 +317,7 @@ void EventLoop::handle_accept(fd_t listener_fd) {
         g_metrics.total_connections.fetch_add(1, std::memory_order_relaxed);
         g_metrics.active_connections.fetch_add(1, std::memory_order_relaxed);
         if (g_observer) {
-            std::string log_msg = "[CLIENT_CONNECTED] " + chosen->host + ":" + std::to_string(chosen->port) + " (" + target->name + ") | " + std::to_string(backend_fd) + " <-> " + std::to_string(client_fd) + " | Active Connections: " + std::to_string(g_metrics.active_connections.load());
+            std::string log_msg = chosen->host + ":" + std::to_string(chosen->port) + " (" + target->name + ") | " + std::to_string(backend_fd) + " <-> " + std::to_string(client_fd) + " | Active Connections: " + std::to_string(g_metrics.active_connections.load());
             g_observer->record_event(obs_queue_, EventType::CLIENT_CONNECTED, client_fd, backend_fd, log_msg);
         }
     }
@@ -501,7 +501,7 @@ void EventLoop::remove_connection(fd_t fd) {
     
     g_metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
     if (g_observer) {
-        std::string log_msg = "[CLIENT_DISCONNECTED] " + conn->backend_instance->host + ":" + std::to_string(conn->backend_instance->port) + " (" + conn->service_name + ") | Active Connections: " + std::to_string(g_metrics.active_connections.load());
+        std::string log_msg = conn->backend_instance->host + ":" + std::to_string(conn->backend_instance->port) + " (" + conn->service_name + ") | Active Connections: " + std::to_string(g_metrics.active_connections.load());
         g_observer->record_event(obs_queue_, EventType::CLIENT_DISCONNECTED, conn->client_fd, conn->backend_fd, log_msg);
     }
 }

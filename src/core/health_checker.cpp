@@ -132,7 +132,7 @@ void HealthChecker::run() {
                             if (sname != "unknown") break;
                         }
                         std::string msg = backend->host + ":" + std::to_string(backend->port) + " " + sname + " down | " + std::to_string(healthy_count) + " healthy";
-                        g_observer->record_event(obs_queue_, EventType::BACKEND_ERROR, INVALID_FD, INVALID_FD, msg);
+                        g_observer->record_event(obs_queue_, EventType::HEALTH_STATE_CHANGED, INVALID_FD, INVALID_FD, msg);
                     }
                 }
             }
